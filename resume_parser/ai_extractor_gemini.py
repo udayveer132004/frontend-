@@ -75,7 +75,16 @@ def extract_resume_data_gemini(
         return resume_data
 
     except Exception as e:
-        logger.error(f"Gemini Extraction Error: {e}")
+        error_msg = str(e)
+        logger.error(f"Gemini Extraction Error: {error_msg}")
+        
+        # WinError 10013 is Access Denied (Socket)
+        if "10013" in error_msg:
+            hint = "WinError 10013 detected: This usually means your Firewall or Antivirus is blocking Python from accessing the network/internet. Please allow python.exe through your firewall."
+            logger.error(hint)
+            if return_debug:
+                return None, f"Network Error: {hint}"
+                
         if return_debug:
-            return None, f"Error: {str(e)}"
+            return None, f"Error: {error_msg}"
         return None

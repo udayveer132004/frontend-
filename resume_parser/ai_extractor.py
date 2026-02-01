@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 _last_thinking = ""
 
 
-def query_ollama(prompt: str, model: str = 'qwen3:4b', stream: bool = False, think: bool = True) -> tuple[str, str]:
+def query_ollama(prompt: str, model: str = 'qwen3:4b', stream: bool = False, think: bool = True, json_mode: bool = True) -> tuple[str, str]:
     """Send prompt to local Ollama and return response text using /api/chat."""
     try:
         payload = {
@@ -27,12 +27,14 @@ def query_ollama(prompt: str, model: str = 'qwen3:4b', stream: bool = False, thi
             ],
             'stream': stream,
             'think': think,  # Enable qwen thinking mode
-            'format': 'json',  # Force JSON output
             'options': {
                 'temperature': 0.1,  # Low temperature for consistent output
                 'num_predict': 8192,  # Allow much longer output for complete JSON
             }
         }
+        
+        if json_mode:
+            payload['format'] = 'json'
 
         response = requests.post(
             'http://localhost:11434/api/chat',
@@ -202,6 +204,10 @@ CRITICAL RULES:
    - Return ONLY valid JSON, no markdown, no explanations
    - Use "" for missing string fields
    - Use [] for missing array fields
+205: 
+206: 5. SUGGESTED ROLES:
+207:    - Infer 1-2 standard job titles the candidate is best suited for (e.g. "Software Engineer", "Data Scientist")
+208:    - Based rigidly on their skills and experience
 
 Sample format of the JSON to return:
 {{
@@ -225,7 +231,8 @@ Sample format of the JSON to return:
     "awards": ["string"],
     "interests": ["string"],
     "ai_summary": "string",
-    "key_strengths": ["string"]
+    "key_strengths": ["string"],
+    "suggested_roles": ["string"]
 }}
 
 RESUME TEXT:

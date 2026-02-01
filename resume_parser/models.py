@@ -35,6 +35,7 @@ class ResumeData(BaseModel):
     # AI-Generated Insights
     ai_summary: Optional[str] = Field(None, description="AI-generated professional summary")
     key_strengths: list[str] = Field(default_factory=list, description="AI-identified key strengths")
+    suggested_roles: list[str] = Field(default_factory=list, description="AI-suggested job titles (1-2) based on skills/experience")
     
     class Config:
         """Pydantic model configuration."""

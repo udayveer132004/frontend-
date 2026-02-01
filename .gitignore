@@ -30,3 +30,11 @@ verify_output.txt
 # OS Files
 .DS_Store
 Thumbs.db
+
+# Generated Media
+temp_audio/
+*.wav
+*.mp3
+*.webm
+gradio_cached_examples/
+flagged/
