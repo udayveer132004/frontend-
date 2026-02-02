@@ -11,16 +11,18 @@ import plotly.graph_objects as go
 import gradio as gr
 from dotenv import load_dotenv
 
-from resume_parser import ResumeParser, ResumeData
-from resume_parser.ats_scorer import ATSScorer, ATSResult
-from resume_parser.ai_extractor import check_ollama_connection
-from resume_parser.job_search import search_jobs
-from resume_parser.job_matcher import JobMatcher
-from resume_parser.interview_engine import InterviewManager
-try:
-    from resume_parser.rag_engine import RAGEngine
-except ImportError:
-    RAGEngine = None
+from datetime import datetime
+from functools import partial
+
+# Backend Imports
+from backend.common.models import ResumeData
+from backend.resume_parsing.parser import ResumeParser
+from backend.resume_parsing.ai_extractor import check_ollama_connection
+from backend.interview.engine import InterviewManager
+from backend.job_portal.search import JobSearchEngine
+from backend.job_portal.matcher import JobMatcher
+from backend.chat.rag_engine import RAGEngine
+from backend.ats.scorer import calculate_ats_score_gemini, ATSScorer
 
 # Configure logging
 logging.basicConfig(
@@ -30,7 +32,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Load environment variables
+# Load environment variables
 load_dotenv()
+
+# Cleanup on exit
+import atexit
+import shutil
+import os
+
+def cleanup_temp_files():
+    """Delete temp_audio directory on exit."""
+    temp_dir = "temp_audio"
+    if os.path.exists(temp_dir):
+        try:
+            shutil.rmtree(temp_dir)
+            logger.info(f"Cleaned up temp directory: {temp_dir}")
+        except Exception as e:
+            logger.error(f"Failed to cleanup temp directory: {e}")
+
+atexit.register(cleanup_temp_files)
 
 # Global storage
 current_resume_data = None
@@ -453,20 +473,44 @@ def create_demo_interface():
                         interview_chat = gr.HTML(label="Interview Transcript", value="<div style='color:gray'>Press Start to begin...</div>")
                         
                     with gr.Column(scale=1):
-                        start_interview_btn = gr.Button("▶️ Start Interview", variant="primary")
+                        with gr.Row():
+                            start_interview_btn = gr.Button("▶️ Start", variant="primary")
+                            end_interview_btn = gr.Button("⏹️ End & Report", variant="secondary")
+                        
                         audio_input = gr.Audio(sources=["microphone"], type="filepath", label="Your Answer")
                         audio_output = gr.Audio(label="AI Interviewer", autoplay=True)
-                        feedback_display = gr.Markdown(label="Real-time Feedback")
+                        feedback_display = gr.Markdown(label="Interview Report")
 
                 # Events
+                def start_interview_wrapper():
+                    q, audio, _ = interview_manager.start_interview(resume_context="Based on resume...")
+                    chat_html = f"<div class='chat-msg bot'><b>AI Interviewer:</b> {q}</div>"
+                    # Clear feedback on start
+                    return chat_html, audio, ""
+
+                def end_interview_wrapper():
+                    report = interview_manager.end_interview()
+                    return report
+
+                def handle_interview_response_wrapper(audio_path):
+                    chat_html, audio_file, _ = handle_interview_response(audio_path)
+                    # Don't show feedback immediately, return empty string
+                    return chat_html, audio_file, ""
+
                 start_interview_btn.click(
                     start_interview_wrapper,
                     inputs=[],
                     outputs=[interview_chat, audio_output, feedback_display]
                 )
                 
+                end_interview_btn.click(
+                    end_interview_wrapper,
+                    inputs=[],
+                    outputs=[feedback_display]
+                )
+                
                 audio_input.stop_recording(
-                    handle_interview_response,
+                    handle_interview_response_wrapper,
                     inputs=[audio_input],
                     outputs=[interview_chat, audio_output, feedback_display]
                 )

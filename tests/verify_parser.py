@@ -1,4 +1,4 @@
-from resume_parser.parser import ResumeParser
+from backend.resume_parsing.parser import ResumeParser
 import logging
 
 logging.basicConfig(level=logging.INFO)

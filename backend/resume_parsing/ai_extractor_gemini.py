@@ -9,7 +9,7 @@ from google import genai
 from google.genai import types
 
 from .ai_extractor import get_extraction_prompt, parse_resume_data_from_response
-from .models import ResumeData
+from backend.common.models import ResumeData
 
 logger = logging.getLogger(__name__)
 

@@ -3,11 +3,12 @@
 import logging
 from pathlib import Path
 from typing import Optional
+from backend.common.models import ResumeData
 
 from .text_extractor import extract_text
 from .ai_extractor import extract_resume_data, check_ollama_connection, _last_thinking
 from .ai_extractor_gemini import extract_resume_data_gemini
-from .models import ResumeData
+
 
 logger = logging.getLogger(__name__)
 

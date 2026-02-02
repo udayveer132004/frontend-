@@ -9,7 +9,7 @@ from dataclasses import dataclass, asdict
 
 from google import genai
 from google.genai import types
-from .models import ResumeData
+from backend.common.models import ResumeData
 
 logger = logging.getLogger(__name__)
 
@@ -256,3 +256,8 @@ class ATSScorer:
              return []
         except:
              return []
+
+def calculate_ats_score_gemini(resume_data: ResumeData, job_description: str) -> ATSResult:
+    """Convenience function for Gemini-based scoring (backward compatibility)."""
+    scorer = ATSScorer(provider="gemini", model="gemini-2.5-flash")
+    return scorer.calculate_score(resume_data, job_description)

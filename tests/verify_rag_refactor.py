@@ -2,7 +2,7 @@
 import logging
 import sys
 import time
-from resume_parser.rag_engine import RAGEngine
+from backend.chat.rag_engine import RAGEngine
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

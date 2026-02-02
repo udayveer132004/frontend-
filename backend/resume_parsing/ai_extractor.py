@@ -9,7 +9,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-from .models import ResumeData
+from backend.common.models import ResumeData
 
 logger = logging.getLogger(__name__)
 

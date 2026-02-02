@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 class InterviewManager:
     def __init__(self, output_dir="temp_audio"):
+        self._add_nvidia_paths()
         self.history = [] # LangChain Message History
         self.scores: List[Dict[str, Any]] = []
         self.current_question = ""
@@ -29,16 +30,9 @@ class InterviewManager:
             model="qwen3:4b",
             temperature=0.2,
         )
-        
+
         # Load Whisper (Tiny)
         logger.info("Loading Whisper Model (tiny)...")
-        # try:
-        #     self.stt_model = whisper.load_model("tiny")
-        # except Exception as e:
-        #     logger.error(f"Failed to load Whisper: {e}")
-        #     self.stt_model = None
-        self.stt_model = None # Disable Whisper
-
         self.stt_model = None # Disable Whisper
 
         # Initialize Wav2Vec2 (CPU friendly) via Pipeline
@@ -75,16 +69,39 @@ class InterviewManager:
         if not os.path.exists(self.filler_audio_path):
              self._generate_tts("That's an interesting point, let me think about the next question.", self.filler_audio_path)
 
+    def _add_nvidia_paths(self):
+        """Add nvidia library paths to environment for faster-whisper."""
+        try:
+            import site
+            import glob
+            
+            site_packages = site.getsitepackages()
+            for sp in site_packages:
+                # Look for nvidia/*/lib or bin
+                nvidia_base = os.path.join(sp, 'nvidia')
+                if os.path.exists(nvidia_base):
+                    for root, dirs, files in os.walk(nvidia_base):
+                        if 'bin' in dirs:
+                            bin_path = os.path.join(root, 'bin')
+                            if bin_path not in os.environ['PATH']:
+                                os.environ['PATH'] += os.pathsep + bin_path
+                        if 'lib' in dirs:
+                            lib_path = os.path.join(root, 'lib')
+                            if lib_path not in os.environ['PATH']:
+                                os.environ['PATH'] += os.pathsep + lib_path
+        except Exception as e:
+            logger.warning(f"Failed to add NVIDIA paths: {e}")
+
     # ...
 
-    def transcribe_audio(self, audio_path: str) -> str:
+    def transcribe_audio_wav2vec2(self, audio_path: str) -> str:
         """Convert audio file to text using Wav2Vec2 Pipeline."""
         if not self.asr_pipeline or not audio_path:
             error_details = self.asr_init_error if hasattr(self, 'asr_init_error') else "Unknown Init Error"
             logger.error(f"ASR Model not loaded. Error: {error_details}")
             return "Error: ASR Model failed to load."
         
-        logger.info(f"Attempting to transcribe: {audio_path}")
+        logger.info(f"Attempting to transcribe (Wav2Vec2): {audio_path}")
         
         if not os.path.exists(audio_path):
             logger.error(f"Audio file does not exist: {audio_path}")
@@ -95,11 +112,92 @@ class InterviewManager:
             result = self.asr_pipeline(audio_path)
             text = result.get("text", "").strip().capitalize()
             
-            logger.info(f"Transcribed: {text}")
+            logger.info(f"Transcribed (Wav2Vec2): {text}")
             return text
         except Exception as e:
             logger.error(f"Transcription failed: {e}")
             return "Error transcribing audio."
+
+    def transcribe_audio_qwen(self, audio_path: str) -> str:
+        """
+        Convert audio file to text using Qwen/Qwen3-ASR-0.6B.
+        Size: ~0.6 Billion parameters (approx 1.2GB RAM).
+        """
+        logger.info(f"Attempting to transcribe (Qwen3-0.6B): {audio_path}")
+        
+        if not os.path.exists(audio_path):
+            return "Error: Audio file not found."
+
+        try:
+            # Lazy load Qwen model
+            if not hasattr(self, 'qwen_pipeline'):
+                logger.info("Loading Qwen3 ASR 0.6B Pipeline (first run)...")
+                from transformers import pipeline
+                # Qwen3 ASR should work with standard 'automatic-speech-recognition'
+                # If not, we might need AutoModelForSpeechSeq2Seq
+                self.qwen_pipeline = pipeline("automatic-speech-recognition", model="Qwen/Qwen3-ASR-0.6B", trust_remote_code=True)
+            
+            result = self.qwen_pipeline(audio_path)
+            text = result.get("text", "").strip().capitalize()
+            
+            logger.info(f"Transcribed (Qwen): {text}")
+            return text
+        except Exception as e:
+            logger.error(f"Qwen Transcription failed: {e}")
+            return f"Error: {str(e)}"
+
+    def transcribe_audio_faster_whisper(self, audio_path: str) -> str:
+        """
+        Convert audio file to text using Faster Whisper (Small).
+        Requires: `pip install faster-whisper`
+        Size: Small model is ~500 MB VRAM/RAM.
+        """
+        logger.info(f"Attempting to transcribe (Faster Whisper Small): {audio_path}")
+        
+        if not os.path.exists(audio_path):
+            return "Error: Audio file not found."
+
+        try:
+            # Lazy load Faster Whisper
+            if not hasattr(self, 'whisper_model'):
+                logger.info("Loading Faster Whisper Small (first run)...")
+                try:
+                    from faster_whisper import WhisperModel
+                except ImportError:
+                    return "Error: faster-whisper not installed. Run `pip install faster-whisper`."
+                
+                # Run on CPU with INT8 by default to be safe, or CUDA if available
+                # 'small' model
+                device = "cuda" if subprocess.call("nvidia-smi", shell=True) == 0 else "cpu"
+                compute_type = "float16" if device == "cuda" else "int8"
+                
+                try:
+                    self.whisper_model = WhisperModel("small", device=device, compute_type=compute_type)
+                except Exception as e:
+                    logger.warning(f"Faster Whisper CUDA init failed: {e}. Falling back to CPU.")
+                    self.whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
+            
+            segments, info = self.whisper_model.transcribe(audio_path, beam_size=5)
+            text = " ".join([segment.text for segment in segments]).strip()
+            
+            logger.info(f"Transcribed (Faster Whisper): {text}")
+            return text
+        except Exception as e:
+            logger.error(f"Faster Whisper Transcription failed: {e}")
+            return f"Error: {str(e)}"
+
+    def transcribe_audio(self, audio_path: str) -> str:
+        """Wrapper to choose STT provider."""
+        # Un-comment the one you want to use:
+        
+        # 1. Wav2Vec2 (Fastest, Smallest, English only)
+        # return self.transcribe_audio_wav2vec2(audio_path)
+        
+        # 2. Qwen3 ASR (Balanced, Multilingual)
+        # return self.transcribe_audio_qwen(audio_path)
+        
+        # 3. Faster Whisper Medium (Most Accurate, Heavier)
+        return self.transcribe_audio_faster_whisper(audio_path)
 
     # ...
 
@@ -280,3 +378,25 @@ class InterviewManager:
             return "Waiting for feedback..."
         latest = self.scores[-1]
         return f"**Analysis**\n🎯 Score: {latest['score']}/10\n💡 {latest['feedback']}"
+
+    def end_interview(self) -> str:
+        """Generate a final aggregated report of the interview."""
+        if not self.scores:
+            return "## Interview Report\nNo questions were answered."
+        
+        total_score = sum(s['score'] for s in self.scores)
+        avg_score = total_score / len(self.scores)
+        
+        report = f"# 📝 Interview Performance Report\n\n"
+        report += f"**Overall Score:** {avg_score:.1f}/10\n"
+        report += f"**Questions Answered:** {len(self.scores)}\n\n"
+        report += "## Question Breakdown\n\n"
+        
+        for i, item in enumerate(self.scores, 1):
+            report += f"### Q{i}: {item['question']}\n"
+            report += f"**Your Answer:** *\"{item['answer'][:100]}...\"*\n"
+            report += f"**Score:** {item['score']}/10\n"
+            report += f"**Feedback:** {item['feedback']}\n"
+            report += "---\n"
+            
+        return report
