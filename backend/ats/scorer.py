@@ -12,6 +12,7 @@ from google.genai import types
 from backend.common.models import ResumeData
 
 logger = logging.getLogger(__name__)
+OLLAMA_NUM_GPU = int(os.getenv("OLLAMA_NUM_GPU", "-1"))
 
 
 @dataclass
@@ -116,7 +117,7 @@ class ATSScorer:
                 'model': self.model,
                 'messages': [{'role': 'user', 'content': prompt}],
                 'stream': False,
-                'options': {'temperature': 0.2, 'num_predict': 4096},
+                'options': {'temperature': 0.2, 'num_predict': 4096, 'num_gpu': OLLAMA_NUM_GPU},
                 'format': 'json'
             }
             response = requests.post('http://localhost:11434/api/chat', json=payload)
@@ -246,7 +247,7 @@ class ATSScorer:
                  'model': 'qwen3:4b', 
                  'messages': [{'role': 'user', 'content': prompt}], 
                  'stream': False,
-                 'options': {'num_predict': 100}
+                 'options': {'num_predict': 100, 'num_gpu': OLLAMA_NUM_GPU}
              })
              if resp.status_code == 200:
                  content = resp.json()['message']['content']

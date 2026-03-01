@@ -84,7 +84,7 @@ mypy_extensions==1.1.0
 narwhals==2.15.0
 networkx==3.6.1
 numba==0.63.1
-numpy==2.4.1
+numpy==2.3.2
 ollama==0.6.1
 openai-whisper==20250625
 orjson==3.11.6

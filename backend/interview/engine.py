@@ -15,6 +15,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 logger = logging.getLogger(__name__)
+OLLAMA_NUM_GPU = int(os.getenv("OLLAMA_NUM_GPU", "-1"))
 
 class InterviewManager:
     def __init__(self, output_dir="temp_audio"):
@@ -29,6 +30,7 @@ class InterviewManager:
         self.llm = ChatOllama(
             model="qwen3:4b",
             temperature=0.2,
+            options={"num_gpu": OLLAMA_NUM_GPU},
         )
 
         # Load Whisper (Tiny)
@@ -296,7 +298,7 @@ class InterviewManager:
         INTERVIEW RULES:
         1. **Structure**: For every turn, provided brief feedback on the user's previous answer (if applicable), then IMMEDIATELY ask the NEXT technical question.
         2. **Consistency**: NEVER stop at just feedback. ALWAYS end your response with a clear question.
-        3. **Variety**: Cover different topics based on the resume (e.g., Python -> SQL -> System Design). Do not stay on one topic for too long.
+        3. **Variety**: Cover different topics based on the resume (e.g., Projects, work experience, skills, education, behavioural etc.). Do not stay on one topic for too long and ask questions related to resume mostly.
         4. **Brevity**: Keep your spoken response to 2-4 sentences max. Be conversational but professional.
         5. **Format**: Just speak the response. Do not use prefixes like "Interviewer:" or "*thinking*".
         

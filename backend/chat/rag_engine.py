@@ -36,6 +36,7 @@ from google import genai
 from google.genai import types
 
 logger = logging.getLogger(__name__)
+OLLAMA_NUM_GPU = int(os.getenv("OLLAMA_NUM_GPU", "-1"))
 
 class RAGEngine:
     """
@@ -139,7 +140,7 @@ class RAGEngine:
             'model': model,
             'messages': [{'role': 'user', 'content': prompt}],
             'stream': True,
-            'options': {'temperature': 0.3}
+            'options': {'temperature': 0.3, 'num_gpu': OLLAMA_NUM_GPU}
         }
         try:
             resp = requests.post('http://localhost:11434/api/chat', json=payload, stream=True, timeout=60)

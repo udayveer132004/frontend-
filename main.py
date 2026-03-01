@@ -19,10 +19,11 @@ from backend.common.models import ResumeData
 from backend.resume_parsing.parser import ResumeParser
 from backend.resume_parsing.ai_extractor import check_ollama_connection
 from backend.interview.engine import InterviewManager
-from backend.job_portal.search import JobSearchEngine
+from backend.job_portal.search import search_jobs
 from backend.job_portal.matcher import JobMatcher
 from backend.chat.rag_engine import RAGEngine
 from backend.ats.scorer import calculate_ats_score_gemini, ATSScorer
+from backend.tracker.tracker import ApplicationTracker, VALID_STATUSES, VALID_ROLE_TYPES
 
 # Configure logging
 logging.basicConfig(
@@ -55,6 +56,7 @@ atexit.register(cleanup_temp_files)
 # Global storage
 current_resume_data = None
 rag_engine_instance = None
+app_tracker = ApplicationTracker(storage_path="data/applications.json")
 
 def get_rag_engine():
     """Singleton accessor for RAG Engine."""
@@ -299,6 +301,292 @@ def rank_jobs_wrapper():
         logger.error(f"Ranking failed: {e}")
         return f"Error ranking jobs: {str(e)}"
 
+# ─── Application Tracker helpers ─────────────────────────────────────────────
+
+STATUS_COLORS = {
+    "Applied": ("#dbeafe", "#1d4ed8"),
+    "Awaiting Interview": ("#fef3c7", "#92400e"),
+    "Interviewed": ("#ede9fe", "#5b21b6"),
+    "Offered": ("#d1fae5", "#065f46"),
+    "Rejected": ("#fee2e2", "#991b1b"),
+    "Withdrawn": ("#f3f4f6", "#374151"),
+}
+
+
+def _status_badge(status: str) -> str:
+    bg, fg = STATUS_COLORS.get(status, ("#f3f4f6", "#374151"))
+    return (
+        f'<span style="background:{bg};color:{fg};padding:3px 10px;'
+        f'border-radius:12px;font-size:12px;font-weight:600;">'
+        f"{status}</span>"
+    )
+
+
+def build_tracker_stats_html(stats: dict) -> str:
+    cards = [
+        ("📋", stats["total"], "Applications", "#3b82f6"),
+        ("🤝", stats["interviews"], "Interviews", "#8b5cf6"),
+        ("🎉", stats["offers"], "Offers", "#10b981"),
+        ("✖", stats["rejections"], "Rejections", "#ef4444"),
+    ]
+    html = '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;">'
+    for icon, val, label, color in cards:
+        html += (
+            f'<div style="border:2px solid {color};border-radius:12px;padding:16px 24px;'
+            f'min-width:130px;text-align:center;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.06);">'
+            f'<div style="font-size:1.8em;">{icon}</div>'
+            f'<div style="font-size:2em;font-weight:700;color:{color};">{val}</div>'
+            f'<div style="color:#6b7280;font-size:0.9em;">{label}</div>'
+            "</div>"
+        )
+    html += "</div>"
+    return html
+
+
+def build_tracker_table_html(rows: list) -> str:
+    if not rows:
+        return '<p style="color:#6b7280;padding:16px;">No applications yet. Add one below!</p>'
+
+    header_cells = "".join(
+        f'<th style="padding:10px 14px;background:#f8fafc;border-bottom:2px solid #e2e8f0;text-align:left;font-size:13px;color:#374151;">'
+        f"{h}</th>"
+        for h in ["#", "Job Title", "Company", "Role Type", "Status", "Date", "Link"]
+    )
+    rows_html = ""
+    for row in rows:
+        num, title, company, role_type, status, app_date, url, _ = row
+        link_cell = (
+            f'<a href="{url}" target="_blank" '
+            f'style="color:#3b82f6;text-decoration:none;">🔗 Link</a>'
+            if url
+            else "—"
+        )
+        bg = "#fff" if num % 2 == 1 else "#f9fafb"
+        rows_html += (
+            f'<tr style="background:{bg};">'
+            f'<td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;color:#6b7280;">{num}</td>'
+            f'<td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;font-weight:600;color:#111827;">{title}</td>'
+            f'<td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;color:#374151;">{company}</td>'
+            f'<td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;color:#374151;">{role_type}</td>'
+            f'<td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;">{_status_badge(status)}</td>'
+            f'<td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;color:#374151;">{app_date}</td>'
+            f'<td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;">{link_cell}</td>'
+            "</tr>"
+        )
+    return (
+        '<div style="overflow-x:auto;">'
+        '<table style="width:100%;border-collapse:collapse;font-size:14px;">'
+        f"<thead><tr>{header_cells}</tr></thead>"
+        f"<tbody>{rows_html}</tbody>"
+        "</table></div>"
+    )
+
+
+def refresh_tracker():
+    stats = app_tracker.get_stats()
+    rows = app_tracker.to_dataframe_rows()
+    return build_tracker_stats_html(stats), build_tracker_table_html(rows)
+
+
+def add_application_wrapper(title, company, role_type, status, app_date, url, notes):
+    if not title or not title.strip():
+        stats_html, table_html = refresh_tracker()
+        return stats_html, table_html, "⚠️ Job Title is required."
+    if not company or not company.strip():
+        stats_html, table_html = refresh_tracker()
+        return stats_html, table_html, "⚠️ Company is required."
+    try:
+        app_tracker.add(
+            job_title=title,
+            company=company,
+            role_type=role_type,
+            status=status,
+            application_date=app_date or None,
+            job_url=url or None,
+            notes=notes or None,
+        )
+        stats_html, table_html = refresh_tracker()
+        return stats_html, table_html, f"✅ Added '{title}' at {company}."
+    except Exception as e:
+        stats_html, table_html = refresh_tracker()
+        return stats_html, table_html, f"❌ Error: {e}"
+
+
+def load_row_for_edit(row_num):
+    """Load application data by 1-based row number into the edit form."""
+    try:
+        idx = int(row_num) - 1
+    except (TypeError, ValueError):
+        return "", "", "Full-time", "Applied", "", "", "", "", "⚠️ Enter a valid row number."
+    rows = app_tracker.to_dataframe_rows()
+    if idx < 0 or idx >= len(rows):
+        return "", "", "Full-time", "Applied", "", "", "", "", "⚠️ Row number out of range."
+    _, title, company, role_type, status, app_date, url, app_id = rows[idx]
+    entry = app_tracker.get_by_id(app_id)
+    return (
+        title, company, role_type, status, app_date,
+        url, entry.notes or "", app_id, f"🔄 Loaded row {row_num}: {title} @ {company}"
+    )
+
+
+def save_edit_wrapper(app_id, title, company, role_type, status, app_date, url, notes):
+    if not app_id:
+        stats_html, table_html = refresh_tracker()
+        return stats_html, table_html, "⚠️ No application loaded. Use 'Load Row' first."
+    updated = app_tracker.update(
+        app_id,
+        job_title=title, company=company, role_type=role_type, status=status,
+        application_date=app_date, job_url=url, notes=notes,
+    )
+    stats_html, table_html = refresh_tracker()
+    if updated:
+        return stats_html, table_html, f"✅ Updated '{updated.job_title}' at {updated.company}."
+    return stats_html, table_html, "❌ Update failed — entry not found."
+
+
+def delete_application_wrapper(app_id):
+    if not app_id:
+        stats_html, table_html = refresh_tracker()
+        return stats_html, table_html, "⚠️ No application loaded. Use 'Load Row' first.", ""
+    entry = app_tracker.get_by_id(app_id)
+    label = f"{entry.job_title} @ {entry.company}" if entry else app_id
+    success = app_tracker.delete(app_id)
+    stats_html, table_html = refresh_tracker()
+    if success:
+        return stats_html, table_html, f"🗑️ Deleted: {label}", ""
+    return stats_html, table_html, "❌ Delete failed — entry not found.", app_id
+
+
+# ── Analytics charts ──────────────────────────────────────────────────────────
+
+ROLE_TYPE_COLORS = [
+    "#3b82f6",  # Full-time      – blue
+    "#8b5cf6",  # Part-time      – violet
+    "#f59e0b",  # Internship     – amber
+    "#10b981",  # Contract       – emerald
+    "#ef4444",  # Freelance      – red
+    "#6b7280",  # other fallback – gray
+]
+
+
+def build_donut_fig():
+    """Plotly donut chart – applications by Role Type."""
+    apps = app_tracker.get_all()
+    counts: dict[str, int] = {}
+    for a in apps:
+        counts[a.role_type] = counts.get(a.role_type, 0) + 1
+
+    if not counts:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No data yet",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="#6b7280"),
+            xref="paper", yref="paper",
+        )
+        fig.update_layout(height=380, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+        return fig
+
+    labels = list(counts.keys())
+    values = list(counts.values())
+    total = sum(values)
+    colors = ROLE_TYPE_COLORS[: len(labels)]
+
+    fig = go.Figure(
+        go.Pie(
+            labels=labels,
+            values=values,
+            hole=0.55,
+            marker=dict(colors=colors, line=dict(color="#ffffff", width=2)),
+            textinfo="label+percent",
+            textposition="outside",
+            insidetextorientation="radial",
+        )
+    )
+    fig.add_annotation(
+        text=f"<b>{total}</b><br><span style='font-size:12px;color:#6b7280'>Total</span>",
+        x=0.5, y=0.5, showarrow=False,
+        font=dict(size=22),
+        xref="paper", yref="paper",
+    )
+    fig.update_layout(
+        title=dict(text="Applications by Role Type", font=dict(size=15), x=0.5),
+        showlegend=True,
+        legend=dict(orientation="v", x=1.02, y=0.5),
+        height=400,
+        margin=dict(t=50, b=20, l=20, r=140),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
+def build_area_fig():
+    """Plotly cumulative area chart – applications added over time by application date."""
+    from datetime import datetime as _dt
+
+    apps = app_tracker.get_all()
+    if not apps:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No data yet",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="#6b7280"),
+            xref="paper", yref="paper",
+        )
+        fig.update_layout(height=350, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+        return fig
+
+    # Sort by application_date
+    dated = []
+    for a in apps:
+        try:
+            d = _dt.fromisoformat(a.application_date).date()
+        except Exception:
+            import datetime
+            d = datetime.date.today()
+        dated.append(d)
+    dated.sort()
+
+    # Build cumulative series grouped by unique date
+    from collections import Counter
+    per_day = Counter(dated)
+    sorted_days = sorted(per_day.keys())
+    x_vals, y_vals, cumulative = [], [], 0
+    for day in sorted_days:
+        cumulative += per_day[day]
+        x_vals.append(str(day))
+        y_vals.append(cumulative)
+
+    fig = go.Figure(
+        go.Scatter(
+            x=x_vals,
+            y=y_vals,
+            mode="lines+markers+text",
+            fill="tozeroy",
+            fillcolor="rgba(74, 180, 130, 0.25)",
+            line=dict(color="#4ab482", width=2.5, shape="spline"),
+            marker=dict(color="#4ab482", size=7),
+            text=[str(v) for v in y_vals],
+            textposition="top center",
+        )
+    )
+    fig.update_layout(
+        title=dict(text="Cumulative Applications Over Time", font=dict(size=15), x=0.5),
+        xaxis=dict(title="Application Date", showgrid=False),
+        yaxis=dict(title="Count", gridcolor="#e5e7eb"),
+        height=380,
+        margin=dict(t=50, b=40, l=50, r=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
+def refresh_analytics():
+    return build_donut_fig(), build_area_fig()
+
+
 # State for Mock Interview
 interview_manager = InterviewManager(output_dir="temp_audio")
 
@@ -366,6 +654,16 @@ def create_demo_interface():
     .chat-msg { padding: 10px; margin: 5px; border-radius: 8px; color: #1a202c !important; }
     .bot { background-color: #f0f4f8; border-left: 4px solid #4299e1; color: #2d3748 !important; }
     .user { background-color: #e2e8f0; border-right: 4px solid #48bb78; text-align: right; color: #2d3748 !important; }
+    .gradio-container .message { color: #1a202c !important; }
+    .gradio-container .message.user { background-color: #e2e8f0 !important; color: #1a202c !important; }
+    .gradio-container .message.bot,
+    .gradio-container .message.assistant { background-color: #f0f4f8 !important; color: #1a202c !important; }
+    .gradio-container .message .prose,
+    .gradio-container .message .prose p,
+    .gradio-container .message .prose li,
+    .gradio-container .message .prose span,
+    .gradio-container .message .prose strong,
+    .gradio-container .message .prose code { color: #1a202c !important; }
     """
     
     # Removed theme and css from Blocks to avoid warning in Gradio 6.0
@@ -463,7 +761,128 @@ def create_demo_interface():
                     outputs=jobs_output
                 )
 
-            # TAB 5: MOCK INTERVIEW
+            # TAB 5: APPLICATION TRACKER
+            with gr.TabItem("📋 Application Tracker"):
+                gr.Markdown("### Track your job applications in one place")
+
+                with gr.Tabs():
+                    # ── Sub-tab 1: Manage ──────────────────────────────────
+                    with gr.TabItem("📋 Manage"):
+
+                        # Stats row
+                        initial_stats, initial_table = refresh_tracker()
+                        tracker_stats = gr.HTML(value=initial_stats, label="Stats")
+                        refresh_tracker_btn = gr.Button("🔄 Refresh", variant="secondary", size="sm")
+
+                        # Applications table
+                        tracker_table = gr.HTML(value=initial_table, label="Applications")
+
+                        # Add new application
+                        with gr.Accordion("➕ Add New Application", open=True):
+                            with gr.Row():
+                                add_title    = gr.Textbox(label="Job Title *", placeholder="e.g. Software Engineer", scale=2)
+                                add_company  = gr.Textbox(label="Company *", placeholder="e.g. Google", scale=2)
+                                add_roletype = gr.Dropdown(label="Role Type", choices=VALID_ROLE_TYPES, value="Full-time", scale=1)
+                                add_status   = gr.Dropdown(label="Status", choices=VALID_STATUSES, value="Applied", scale=1)
+                            with gr.Row():
+                                add_date = gr.Textbox(label="Application Date (YYYY-MM-DD)", placeholder="Leave blank for today", scale=1)
+                                add_url  = gr.Textbox(label="Job URL (optional)", placeholder="https://...", scale=3)
+                            add_notes      = gr.Textbox(label="Notes (optional)", lines=2, placeholder="Any notes about the role...")
+                            add_btn        = gr.Button("➕ Add Application", variant="primary")
+                            add_status_msg = gr.Markdown("")
+
+                        # Edit / Delete
+                        with gr.Accordion("✏️ Edit / Delete Application", open=False):
+                            gr.Markdown("Enter the **row number** from the table above, then click *Load Row* to populate the form.")
+                            with gr.Row():
+                                edit_row_num = gr.Number(label="Row #", value=1, minimum=1, step=1, scale=1)
+                                load_row_btn = gr.Button("📂 Load Row", scale=1)
+                            edit_load_msg = gr.Markdown("")
+                            edit_id_state = gr.State("")
+                            with gr.Row():
+                                edit_title    = gr.Textbox(label="Job Title", scale=2)
+                                edit_company  = gr.Textbox(label="Company", scale=2)
+                                edit_roletype = gr.Dropdown(label="Role Type", choices=VALID_ROLE_TYPES, value="Full-time", scale=1)
+                                edit_status   = gr.Dropdown(label="Status", choices=VALID_STATUSES, value="Applied", scale=1)
+                            with gr.Row():
+                                edit_date = gr.Textbox(label="Application Date (YYYY-MM-DD)", scale=1)
+                                edit_url  = gr.Textbox(label="Job URL", scale=3)
+                            edit_notes = gr.Textbox(label="Notes", lines=2)
+                            with gr.Row():
+                                save_edit_btn    = gr.Button("💾 Save Changes", variant="primary")
+                                delete_entry_btn = gr.Button("🗑️ Delete Entry", variant="stop")
+                            edit_action_msg = gr.Markdown("")
+
+                        # Event wiring – Manage tab
+                        refresh_tracker_btn.click(
+                            refresh_tracker,
+                            inputs=[],
+                            outputs=[tracker_stats, tracker_table],
+                        )
+                        add_btn.click(
+                            add_application_wrapper,
+                            inputs=[add_title, add_company, add_roletype, add_status, add_date, add_url, add_notes],
+                            outputs=[tracker_stats, tracker_table, add_status_msg],
+                        )
+                        load_row_btn.click(
+                            load_row_for_edit,
+                            inputs=[edit_row_num],
+                            outputs=[
+                                edit_title, edit_company, edit_roletype, edit_status,
+                                edit_date, edit_url, edit_notes, edit_id_state, edit_load_msg,
+                            ],
+                        )
+                        save_edit_btn.click(
+                            save_edit_wrapper,
+                            inputs=[edit_id_state, edit_title, edit_company, edit_roletype,
+                                    edit_status, edit_date, edit_url, edit_notes],
+                            outputs=[tracker_stats, tracker_table, edit_action_msg],
+                        )
+                        delete_entry_btn.click(
+                            delete_application_wrapper,
+                            inputs=[edit_id_state],
+                            outputs=[tracker_stats, tracker_table, edit_action_msg, edit_id_state],
+                        )
+
+                    # ── Sub-tab 2: Analytics ───────────────────────────────
+                    with gr.TabItem("📈 Analytics"):
+                        gr.Markdown("Visual breakdown of your applications.")
+
+                        analytics_refresh_btn = gr.Button("🔄 Refresh Charts", variant="secondary", size="sm")
+
+                        with gr.Row():
+                            donut_chart = gr.Plot(label="Applications by Role Type")
+                            area_chart  = gr.Plot(label="Cumulative Applications Over Time")
+
+                        # Render charts on load
+                        _init_donut, _init_area = refresh_analytics()
+                        donut_chart.value = _init_donut
+                        area_chart.value  = _init_area
+
+                        # Event wiring – Analytics tab
+                        analytics_refresh_btn.click(
+                            refresh_analytics,
+                            inputs=[],
+                            outputs=[donut_chart, area_chart],
+                        )
+                        # Also refresh charts whenever an application is added/edited/deleted
+                        add_btn.click(
+                            refresh_analytics,
+                            inputs=[],
+                            outputs=[donut_chart, area_chart],
+                        )
+                        save_edit_btn.click(
+                            refresh_analytics,
+                            inputs=[],
+                            outputs=[donut_chart, area_chart],
+                        )
+                        delete_entry_btn.click(
+                            refresh_analytics,
+                            inputs=[],
+                            outputs=[donut_chart, area_chart],
+                        )
+
+            # TAB 6: MOCK INTERVIEW
             with gr.TabItem("🎤 Mock Interview"):
                 gr.Markdown("### AI-Powered Mock Interview")
                 gr.Markdown("Practice your interview skills with an AI that listens, speaks, and analyzes your answers in real-time.")

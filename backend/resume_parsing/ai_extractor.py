@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 from typing import Optional, Generator
 import requests
@@ -12,6 +13,7 @@ from langchain_core.output_parsers import StrOutputParser
 from backend.common.models import ResumeData
 
 logger = logging.getLogger(__name__)
+OLLAMA_NUM_GPU = int(os.getenv("OLLAMA_NUM_GPU", "-1"))
 
 # Global variable to store last thinking response for debug
 _last_thinking = ""
@@ -30,6 +32,7 @@ def query_ollama(prompt: str, model: str = 'qwen3:4b', stream: bool = False, thi
             'options': {
                 'temperature': 0.1,  # Low temperature for consistent output
                 'num_predict': 8192,  # Allow much longer output for complete JSON
+                'num_gpu': OLLAMA_NUM_GPU,
             }
         }
         
@@ -113,6 +116,7 @@ def stream_ollama_response(prompt: str, model: str = "qwen3:4b", think: bool = T
         'options': {
             'temperature': 0.1,
             'num_predict': 8192,
+            'num_gpu': OLLAMA_NUM_GPU,
         }
     }
 
@@ -161,7 +165,7 @@ def _build_langchain_chain(model: str = "qwen3:4b"):
         model=model,
         temperature=0.1,
         format="json",
-        options={"num_predict": 8192},
+        options={"num_predict": 8192, "num_gpu": OLLAMA_NUM_GPU},
         model_kwargs={"think": True}
     )
 
