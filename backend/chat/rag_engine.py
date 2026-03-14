@@ -103,7 +103,7 @@ class RAGEngine:
         self.all_chunks = chunks  # Store for debug
         logger.info(f"Indexed {len(docs)} chunks.")
 
-    def query(self, question: str, provider: str, model: str) -> Generator[Tuple[str, str, str], None, None]:
+    def query(self, question: str, provider: str, model: str, think: bool = True) -> Generator[Tuple[str, str, str], None, None]:
         """
         RAG Query: Retrieve context -> Stream Answer from LLM.
         Returns generator yielding (Answer Chunk, Context, Prompt).
@@ -130,16 +130,17 @@ class RAGEngine:
         if provider == "gemini":
             stream = self._stream_gemini(prompt, model)
         else:
-            stream = self._stream_ollama(prompt, model)
+            stream = self._stream_ollama(prompt, model, think=think)
             
         for _, chunk in stream:
             yield chunk, context_text, prompt
 
-    def _stream_ollama(self, prompt: str, model: str) -> Generator[Tuple[str, str], None, None]:
+    def _stream_ollama(self, prompt: str, model: str, think: bool = True) -> Generator[Tuple[str, str], None, None]:
         payload = {
             'model': model,
             'messages': [{'role': 'user', 'content': prompt}],
             'stream': True,
+            'think': think,
             'options': {'temperature': 0.3, 'num_gpu': OLLAMA_NUM_GPU}
         }
         try:

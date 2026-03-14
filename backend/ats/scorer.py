@@ -36,9 +36,10 @@ class ATSScorer:
     Uses LLM (Ollama/Gemini) primarily, with a heuristic fallback.
     """
     
-    def __init__(self, model: str = "qwen3:4b", provider: str = "ollama"):
+    def __init__(self, model: str = "qwen3.5:2b", provider: str = "ollama", think: bool = True):
         self.model = model
         self.provider = provider
+        self.think = think
     
     def calculate_score(self, resume_data: ResumeData, job_description: str) -> ATSResult:
         """
@@ -117,6 +118,7 @@ class ATSScorer:
                 'model': self.model,
                 'messages': [{'role': 'user', 'content': prompt}],
                 'stream': False,
+                'think': self.think,
                 'options': {'temperature': 0.2, 'num_predict': 4096, 'num_gpu': OLLAMA_NUM_GPU},
                 'format': 'json'
             }
@@ -244,9 +246,10 @@ class ATSScorer:
              
              prompt = f"Extract 5 technical keywords from: {jd[:500]}. Return JSON list."
              resp = requests.post('http://localhost:11434/api/chat', json={
-                 'model': 'qwen3:4b', 
+                 'model': 'qwen3.5:2b', 
                  'messages': [{'role': 'user', 'content': prompt}], 
                  'stream': False,
+                 'think': self.think,
                  'options': {'num_predict': 100, 'num_gpu': OLLAMA_NUM_GPU}
              })
              if resp.status_code == 200:

@@ -18,7 +18,9 @@ from functools import partial
 from backend.common.models import ResumeData
 from backend.resume_parsing.parser import ResumeParser
 from backend.resume_parsing.ai_extractor import check_ollama_connection
-from backend.interview.engine import InterviewManager
+from backend.interview.interviewer import InterviewManager
+# from backend.interview.engine import InterviewManager
+
 from backend.job_portal.search import search_jobs
 from backend.job_portal.matcher import JobMatcher
 from backend.chat.rag_engine import RAGEngine
@@ -73,7 +75,7 @@ def get_rag_engine():
             return None
     return rag_engine_instance
 
-def parse_resume(file, provider: str, model: str):
+def parse_resume(file, provider: str, model: str, think: bool = True):
     """
     Parse uploaded resume and return structured JSON data.
     Also indexes text for RAG.
@@ -89,7 +91,7 @@ def parse_resume(file, provider: str, model: str):
             if not selected_model or selected_model.startswith("qwen"):
                 selected_model = "gemini-2.5-flash"
         
-        parser = ResumeParser(model=selected_model, provider=provider)
+        parser = ResumeParser(model=selected_model, provider=provider, think=think)
         logger.info(f"Processing file: {file.name}")
         
         result_tuple, raw_text = parser.parse(file.name)
@@ -124,7 +126,7 @@ def parse_resume(file, provider: str, model: str):
         logger.error(f"Error parsing resume: {e}", exc_info=True)
         return json.dumps({"error": str(e)}, indent=2), "", "", ""
 
-def calculate_ats_score(job_description: str, provider: str, model: str):
+def calculate_ats_score(job_description: str, provider: str, model: str, think: bool = True):
     """Calculate ATS score and generate visualizations."""
     global current_resume_data
     
@@ -138,7 +140,7 @@ def calculate_ats_score(job_description: str, provider: str, model: str):
         selected_model = model
         if provider == "gemini": selected_model = "gemini-2.5-flash"
             
-        scorer = ATSScorer(model=selected_model, provider=provider)
+        scorer = ATSScorer(model=selected_model, provider=provider, think=think)
         result = scorer.calculate_score(current_resume_data, job_description)
         
         # 1. Gauge Chart
@@ -170,7 +172,7 @@ def calculate_ats_score(job_description: str, provider: str, model: str):
         logger.error(f"Error calculating ATS score: {e}", exc_info=True)
         return None, None, None, f"Error: {str(e)}", ""
 
-def chat_response(message, history, provider, model):
+def chat_response(message, history, provider, model, think=True):
     """
     Handle RAG Chat interaction.
     """
@@ -191,7 +193,7 @@ def chat_response(message, history, provider, model):
         # Prepare all chunks for display
         all_chunks_str = json.dumps(rag.all_chunks, indent=2) if rag.all_chunks else "[]"
 
-        for chunk, context, prompt in rag.query(message, provider=provider, model=selected_model):
+        for chunk, context, prompt in rag.query(message, provider=provider, model=selected_model, think=think):
             yield chunk, context, prompt, all_chunks_str
             
     except Exception as e:
@@ -238,7 +240,7 @@ def create_job_cards(jobs):
                 <a href="{job['apply_url'] or job['url']}" target="_blank" style="display: block; text-align: center; background: #3182ce; color: white; padding: 8px; border-radius: 6px; text-decoration: none; font-weight: bold;">Apply Now 🚀</a>
             </div>
             <div style="font-size: 10px; color: #a0aec0; text-align: center; margin-top: 8px;">
-                via Remote OK
+                via {job.get('source', 'Remote Jobs API')}
             </div>
         </div>
         """
@@ -590,8 +592,18 @@ def refresh_analytics():
 # State for Mock Interview
 interview_manager = InterviewManager(output_dir="temp_audio")
 
-def start_interview_wrapper():
+def start_interview_wrapper(provider: str, model: str, think: bool):
     """Initialize interview session."""
+    if provider != "ollama":
+        return (
+            "<div class='chat-msg bot'><b>AI Interviewer:</b> Mock Interview currently supports Ollama models only.</div>",
+            None,
+            "",
+            interview_manager.get_debug_trace(),
+        )
+
+    interview_manager.configure_llm(model=model, think=think)
+
     # Context from resume
     resume_context = ""
     if current_resume_data:
@@ -603,12 +615,22 @@ def start_interview_wrapper():
     
     # Return: History Text, Audio Output, Feedback Text
     history_html = f"<div class='chat-msg bot'><b>AI Interviewer:</b> {q_text}</div>"
-    return history_html, audio_path, ""
+    return history_html, audio_path, "", interview_manager.get_debug_trace()
 
-def handle_interview_response(audio_path):
+def handle_interview_response(audio_path, provider: str, model: str, think: bool):
     """Process user audio response."""
     if not audio_path:
-        return None, None, None
+        return None, None, None, interview_manager.get_debug_trace()
+
+    if provider != "ollama":
+        return (
+            "<div class='chat-msg bot'><b>AI Interviewer:</b> Mock Interview currently supports Ollama models only.</div>",
+            None,
+            "",
+            interview_manager.get_debug_trace(),
+        )
+
+    interview_manager.configure_llm(model=model, think=think)
         
     resume_context = "General Context"
     if current_resume_data:
@@ -645,7 +667,7 @@ def handle_interview_response(audio_path):
         
     feedback = interview_manager.get_latest_feedback()
     
-    return chat_html, audio_file, feedback
+    return chat_html, audio_file, feedback, interview_manager.get_debug_trace()
 
 def create_demo_interface():
     custom_css = """
@@ -677,11 +699,31 @@ def create_demo_interface():
             
         with gr.Row():
             provider_input = gr.Dropdown(label="Provider", choices=["ollama", "gemini"], value="ollama")
-            model_input = gr.Textbox(label="Model", value="qwen3:4b", placeholder="qwen3:4b or gemini-2.5-flash")
+            model_input = gr.Dropdown(
+                label="Model",
+                choices=["qwen3:4b", "qwen3.5:2b"],
+                value="qwen3.5:2b",
+                allow_custom_value=False,
+            )
+            think_input = gr.Checkbox(label="Think", value=True)
         
         def _update_model(provider):
-            return "gemini-2.5-flash" if provider == "gemini" else "qwen3:4b"
-        provider_input.change(_update_model, inputs=provider_input, outputs=model_input)
+            if provider == "gemini":
+                return (
+                    gr.update(
+                        choices=["gemini-2.5-flash"],
+                        value="gemini-2.5-flash",
+                    ),
+                    gr.update(value=False, interactive=False),
+                )
+            return (
+                gr.update(
+                    choices=["qwen3:4b", "qwen3.5:2b"],
+                    value="qwen3.5:2b",
+                ),
+                gr.update(value=True, interactive=True),
+            )
+        provider_input.change(_update_model, inputs=provider_input, outputs=[model_input, think_input])
             
         with gr.Tabs():
             with gr.TabItem("📄 Resume Parser"):
@@ -709,7 +751,7 @@ def create_demo_interface():
                     suggestions_output = gr.Markdown(label="Suggestions")
                 with gr.Accordion("Raw Scoring Data", open=False):
                     ats_raw_output = gr.Code(language="json")
-                score_btn.click(calculate_ats_score, inputs=[jd_input, provider_input, model_input], 
+                score_btn.click(calculate_ats_score, inputs=[jd_input, provider_input, model_input, think_input], 
                                 outputs=[gauge_chart, radar_chart, missing_kw_output, suggestions_output, ats_raw_output])
 
             # TAB 3: CHAT (RAG)
@@ -729,7 +771,7 @@ def create_demo_interface():
                 # Chat Interface with additional outputs
                 chat_interface = gr.ChatInterface(
                     fn=chat_response,
-                    additional_inputs=[provider_input, model_input],
+                    additional_inputs=[provider_input, model_input, think_input],
                     additional_outputs=[context_output, prompt_output, chunks_output],
                     title="Resume Chat"
                 )
@@ -737,7 +779,7 @@ def create_demo_interface():
             # TAB 4: JOB SEARCH
             with gr.TabItem("🌍 Job Search"):
                 gr.Markdown("### Find Remote Jobs")
-                gr.Markdown("Search for jobs via **Remote OK** API. Data provided by [Remote OK](https://remoteok.com/).")
+                gr.Markdown("Search for jobs across **Remote OK**, **We Work Remotely**, **Jobicy**, and **Remotive**.")
                 
                 with gr.Row():
                     job_role_input = gr.Textbox(label="Job Role / Keywords", placeholder="e.g. Python Developer", scale=2)
@@ -899,39 +941,42 @@ def create_demo_interface():
                         audio_input = gr.Audio(sources=["microphone"], type="filepath", label="Your Answer")
                         audio_output = gr.Audio(label="AI Interviewer", autoplay=True)
                         feedback_display = gr.Markdown(label="Interview Report")
+                        interview_debug_output = gr.Textbox(
+                            label="Interview Debug Trace",
+                            lines=18,
+                            interactive=False,
+                            value="No interview debug events yet.",
+                        )
 
                 # Events
-                def start_interview_wrapper():
-                    q, audio, _ = interview_manager.start_interview(resume_context="Based on resume...")
-                    chat_html = f"<div class='chat-msg bot'><b>AI Interviewer:</b> {q}</div>"
-                    # Clear feedback on start
-                    return chat_html, audio, ""
+                def start_interview_wrapper_ui(provider, model, think):
+                    return start_interview_wrapper(provider, model, think)
 
                 def end_interview_wrapper():
                     report = interview_manager.end_interview()
-                    return report
+                    return report, interview_manager.get_debug_trace()
 
-                def handle_interview_response_wrapper(audio_path):
-                    chat_html, audio_file, _ = handle_interview_response(audio_path)
-                    # Don't show feedback immediately, return empty string
-                    return chat_html, audio_file, ""
+                def handle_interview_response_wrapper(audio_path, provider, model, think):
+                    chat_html, audio_file, _, debug_trace = handle_interview_response(audio_path, provider, model, think)
+                    # Don't show feedback immediately, return empty string, but keep debug trace updated.
+                    return chat_html, audio_file, "", debug_trace
 
                 start_interview_btn.click(
-                    start_interview_wrapper,
-                    inputs=[],
-                    outputs=[interview_chat, audio_output, feedback_display]
+                    start_interview_wrapper_ui,
+                    inputs=[provider_input, model_input, think_input],
+                    outputs=[interview_chat, audio_output, feedback_display, interview_debug_output]
                 )
                 
                 end_interview_btn.click(
                     end_interview_wrapper,
                     inputs=[],
-                    outputs=[feedback_display]
+                    outputs=[feedback_display, interview_debug_output]
                 )
                 
                 audio_input.stop_recording(
                     handle_interview_response_wrapper,
-                    inputs=[audio_input],
-                    outputs=[interview_chat, audio_output, feedback_display]
+                    inputs=[audio_input, provider_input, model_input, think_input],
+                    outputs=[interview_chat, audio_output, feedback_display, interview_debug_output]
                 )
                 
                 # Update parse_resume to auto-fill job role
@@ -944,7 +989,7 @@ def create_demo_interface():
                 # Update Tab 1 click to target job_role_input
                 parse_btn.click(
                     parse_resume, 
-                    inputs=[file_input, provider_input, model_input], 
+                    inputs=[file_input, provider_input, model_input, think_input], 
                     outputs=[json_output, text_output, debug_output, job_role_input]
                 )
 

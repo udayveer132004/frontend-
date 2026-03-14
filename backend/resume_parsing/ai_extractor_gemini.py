@@ -57,18 +57,14 @@ def extract_resume_data_gemini(
         )
         
         result_text = response.text
-        resume_data = None
 
-        # Parse JSON directly since we requested JSON mode
+        # Use the shared parser so Gemini and Ollama both benefit from
+        # the same JSON extraction + schema normalization behavior.
         try:
-            data_dict = json.loads(result_text)
-            resume_data = ResumeData(**data_dict)
-        except json.JSONDecodeError:
-            logger.warning("Gemini JSON mode failed to produce valid JSON, trying fallback parser.")
-            resume_data = parse_resume_data_from_response(result_text)
+            resume_data = parse_resume_data_from_response(text, result_text)
         except Exception as e:
             logger.error(f"Validation error: {e}")
-            resume_data = parse_resume_data_from_response(result_text)
+            resume_data = None
 
         if return_debug:
             return resume_data, result_text

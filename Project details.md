@@ -39,7 +39,7 @@ This project is an AI-powered Job Assistant that provides:
 ## 3. Model Specifications
 
 ### Large Language Models (LLM)
-1.  **Primary (Local)**: `qwen3:4b`
+1.  **Primary (Local)**: `qwen3.5:2b`
     *   **Provider**: Ollama
     *   **Usage**: Resume parsing, Chat, Interview logic.
 2.  **Fallback/Cloud**: `gemini-2.5-flash`
@@ -104,7 +104,7 @@ The project supports multiple STT engines, configurable in `backend/interview/en
     ```
 5.  **Pull Ollama Model**:
     ```bash
-    ollama pull qwen3:4b
+    ollama pull qwen3.5:2b
     ```
 
 ### Configuration (.env)

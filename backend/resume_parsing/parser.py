@@ -6,7 +6,7 @@ from typing import Optional
 from backend.common.models import ResumeData
 
 from .text_extractor import extract_text
-from .ai_extractor import extract_resume_data, check_ollama_connection, _last_thinking
+from .ai_extractor import extract_resume_data, check_ollama_connection, get_last_model_debug_output
 from .ai_extractor_gemini import extract_resume_data_gemini
 
 
@@ -22,16 +22,18 @@ class ResumeParser:
         resume_data = parser.parse("path/to/resume.pdf")
     """
     
-    def __init__(self, model: str = "qwen3:4b", provider: str = "ollama"):
+    def __init__(self, model: str = "qwen3.5:2b", provider: str = "ollama", think: bool = True):
         """
         Initialize the ResumeParser.
         
         Args:
-            model: Model name to use for extraction (default: qwen3:4b)
+            model: Model name to use for extraction (default: qwen3.5:2b)
             provider: Model provider to use ("ollama" or "gemini")
+            think: Whether to enable Ollama thinking mode
         """
         self.model = model
         self.provider = provider.lower().strip()
+        self.think = think
         self._debug_info = ""  # Store debug info
         self._check_prerequisites()
     
@@ -99,9 +101,16 @@ class ResumeParser:
                 )
             else:
                 resume_data, raw_response = extract_resume_data(
-                    text, model=self.model, return_debug=True
+                    text, model=self.model, return_debug=True, think=self.think
                 )
-            logger.info(f"Successfully parsed resume: {resume_data.name if resume_data else 'Unknown'}")
+            if resume_data:
+                logger.info(f"Successfully parsed resume: {resume_data.name if resume_data else 'Unknown'}")
+            else:
+                logger.warning("Model returned output, but it could not be parsed into valid ResumeData.")
+
+            last_content, last_thinking = get_last_model_debug_output()
+            shown_raw = raw_response or last_content or "N/A"
+            shown_thinking = last_thinking or "N/A"
             
             # Store debug info - NO TRUNCATION
             self._debug_info = f"""=== MODEL DEBUG INFO ===
@@ -112,13 +121,19 @@ Model: {self.model}
 === INPUT (Resume Text - {len(text)} chars) ===
 {text}
 
-=== RAW MODEL OUTPUT ({len(raw_response) if raw_response else 0} chars) ===
-{raw_response if raw_response else 'N/A'}
+=== RAW MODEL OUTPUT ({len(shown_raw) if shown_raw != 'N/A' else 0} chars) ===
+{shown_raw}
+
+=== MODEL THINKING ({len(shown_thinking) if shown_thinking != 'N/A' else 0} chars) ===
+{shown_thinking}
 """
             return resume_data, text
         except Exception as e:
             logger.error(f"AI extraction failed: {e}")
-            # Try to get raw response from the exception context if possible
+            last_content, last_thinking = get_last_model_debug_output()
+            shown_raw = last_content or "N/A"
+            shown_thinking = last_thinking or "N/A"
+
             self._debug_info = f"""=== MODEL DEBUG INFO ===
 
 Provider: {self.provider}
@@ -128,8 +143,11 @@ Error: {str(e)}
 === INPUT (Resume Text - {len(text)} chars) ===
 {text}
 
-=== NOTE ===
-Raw model output not available due to error. Check terminal logs for details.
+=== RAW MODEL OUTPUT ({len(shown_raw) if shown_raw != 'N/A' else 0} chars) ===
+{shown_raw}
+
+=== MODEL THINKING ({len(shown_thinking) if shown_thinking != 'N/A' else 0} chars) ===
+{shown_thinking}
 """
             # Return text even if AI extraction fails
             return None, text
@@ -149,5 +167,5 @@ Raw model output not available due to error. Check terminal logs for details.
         if self.provider == "gemini":
             result, _ = extract_resume_data_gemini(text, model=self.model, return_debug=True)
             return result
-        result, _ = extract_resume_data(text, model=self.model, return_debug=True)
+        result, _ = extract_resume_data(text, model=self.model, return_debug=True, think=self.think)
         return result

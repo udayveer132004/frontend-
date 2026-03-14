@@ -17,10 +17,12 @@ OLLAMA_NUM_GPU = int(os.getenv("OLLAMA_NUM_GPU", "-1"))
 
 # Global variable to store last thinking response for debug
 _last_thinking = ""
+_last_content = ""
 
 
-def query_ollama(prompt: str, model: str = 'qwen3:4b', stream: bool = False, think: bool = True, json_mode: bool = True) -> tuple[str, str]:
+def query_ollama(prompt: str, model: str = 'qwen3.5:2b', stream: bool = False, think: bool = True, json_mode: bool = True) -> tuple[str, str]:
     """Send prompt to local Ollama and return response text using /api/chat."""
+    global _last_content, _last_thinking
     try:
         payload = {
             'model': model,
@@ -43,7 +45,7 @@ def query_ollama(prompt: str, model: str = 'qwen3:4b', stream: bool = False, thi
             'http://localhost:11434/api/chat',
             json=payload,
             timeout=600,
-            stream=stream
+            stream=stream,
         )
         response.raise_for_status()
 
@@ -60,6 +62,9 @@ def query_ollama(prompt: str, model: str = 'qwen3:4b', stream: bool = False, thi
             if not content and thinking:
                 logger.info("Content empty, using thinking field as content")
                 content = thinking
+
+            _last_content = content
+            _last_thinking = thinking
 
             logger.info(f"Response preview: {content[:500] if content else 'EMPTY'}")
             return content, thinking
@@ -97,13 +102,16 @@ def query_ollama(prompt: str, model: str = 'qwen3:4b', stream: bool = False, thi
             if chunk.get('done') is True:
                 break
 
+        _last_content = content
+        _last_thinking = thinking
+
         return content, thinking
     except Exception as e:
         logger.error(f"Ollama API error: {e}")
         raise ConnectionError(f"Failed to connect to Ollama: {str(e)}")
 
 
-def stream_ollama_response(prompt: str, model: str = "qwen3:4b", think: bool = True) -> Generator[tuple[str, str], None, None]:
+def stream_ollama_response(prompt: str, model: str = "qwen3.5:2b", think: bool = True) -> Generator[tuple[str, str], None, None]:
     """Stream Ollama response and yield (content_so_far, thinking_so_far)."""
     payload = {
         'model': model,
@@ -149,13 +157,21 @@ def stream_ollama_response(prompt: str, model: str = "qwen3:4b", think: bool = T
             yield content, thinking
 
             if chunk.get('done') is True:
+                global _last_content, _last_thinking
+                _last_content = content
+                _last_thinking = thinking
                 break
     except Exception as e:
         logger.error(f"Ollama API error: {e}")
         raise ConnectionError(f"Failed to connect to Ollama: {str(e)}")
 
 
-def _build_langchain_chain(model: str = "qwen3:4b"):
+def get_last_model_debug_output() -> tuple[str, str]:
+    """Return latest (content, thinking) captured from Ollama responses."""
+    return _last_content, _last_thinking
+
+
+def _build_langchain_chain(model: str = "qwen3.5:2b"):
     """Build a LangChain pipeline for prompt -> LLM -> string output."""
     prompt = ChatPromptTemplate.from_messages([
         ("human", "{prompt}")
@@ -173,7 +189,7 @@ def _build_langchain_chain(model: str = "qwen3:4b"):
     return chain
 
 
-def stream_langchain_response(prompt_text: str, model: str = "qwen3:4b") -> Generator[str, None, None]:
+def stream_langchain_response(prompt_text: str, model: str = "qwen3.5:2b") -> Generator[str, None, None]:
     """Stream model output via LangChain and yield accumulated text."""
     chain = _build_langchain_chain(model=model)
     content = ""
@@ -208,36 +224,9 @@ CRITICAL RULES:
    - Return ONLY valid JSON, no markdown, no explanations
    - Use "" for missing string fields
    - Use [] for missing array fields
-205: 
-206: 5. SUGGESTED ROLES:
-207:    - Infer 1-2 standard job titles the candidate is best suited for (e.g. "Software Engineer", "Data Scientist")
-208:    - Based rigidly on their skills and experience
-
-Sample format of the JSON to return:
-{{
-    "name": "string",
-    "email": "string", 
-    "phone": "string",
-    "location": "string",
-    "linkedin": "string",
-    "github": "string",
-    "portfolio": "string",
-    "skills": ["string"],
-    "education": ["string - include institution, degree, dates"],
-    "experience": ["string - ONLY paid jobs/internships at companies"],
-    "summary": "string",
-    "achievements": ["string"],
-    "certifications": ["string - include name, organization, date, details"],
-    "projects": ["string - include title, technologies, date, all bullet points or details"],
-    "publications": ["string"],
-    "languages": ["string"],
-    "volunteer": ["string"],
-    "awards": ["string"],
-    "interests": ["string"],
-    "ai_summary": "string",
-    "key_strengths": ["string"],
-    "suggested_roles": ["string"]
-}}
+5. SUGGESTED ROLES:
+- Infer 1-2 standard job titles the candidate is best suited for (e.g. "Software Engineer", "Data Scientist")
+- Based rigidly on their skills and experience
 
 RESUME TEXT:
 {resume_text}
@@ -247,18 +236,19 @@ Return valid JSON only:"""
 
 def extract_resume_data(
     text: str,
-    model: str = "qwen3:4b",
+    model: str = "qwen3.5:2b",
     timeout: int = 300,
     use_structured_output: bool = True,
     return_debug: bool = False,
-    stream: bool = False
+    stream: bool = False,
+    think: bool = True,
 ) -> Optional[ResumeData]:
     """
     Extract structured resume data from text using Ollama AI.
     
     Args:
         text: The resume text content
-        model: Ollama model to use (default: qwen3:4b)
+        model: Ollama model to use (default: qwen3.5:2b)
         timeout: Request timeout in seconds
         use_structured_output: Kept for compatibility but not used
         return_debug: If True, return tuple of (ResumeData, raw_response)
@@ -274,7 +264,7 @@ def extract_resume_data(
     
     try:
         logger.info(f"Calling Ollama with model: {model}")
-        content, thinking = query_ollama(prompt, model=model, stream=stream, think=True)
+        content, thinking = query_ollama(prompt, model=model, stream=stream, think=think)
         raw_response = content  # For backward compatibility
         
         logger.info(f"Received response, content: {len(content)} chars, thinking: {len(thinking)} chars")
@@ -283,8 +273,19 @@ def extract_resume_data(
         # Store thinking for debug access
         global _last_thinking
         _last_thinking = thinking
-        
-        resume_data = parse_resume_data_from_response(text, content)
+
+        try:
+            resume_data = parse_resume_data_from_response(text, content)
+        except Exception as parse_err:
+            if thinking:
+                logger.warning(
+                    f"Primary content JSON parse failed ({parse_err}); retrying parse from thinking text."
+                )
+                resume_data = parse_resume_data_from_response(text, thinking)
+                raw_response = f"[content]\n{content}\n\n[thinking]\n{thinking}"
+            else:
+                raise
+
         if return_debug:
             return resume_data, raw_response
         return resume_data
@@ -296,7 +297,8 @@ def extract_resume_data(
     except Exception as e:
         logger.error(f"Unexpected error during extraction: {e}")
         if return_debug:
-            raise
+            # Return raw model output so callers can show it in debug UI.
+            return None, raw_response
         raise
 
 
@@ -587,14 +589,140 @@ def _merge_with_heuristics(data_dict: dict, heuristic: dict) -> dict:
     return data_dict
 
 
+def _dict_entry_to_text(entry: dict) -> str:
+    """Convert structured dict entries into readable single-line text."""
+    if not isinstance(entry, dict):
+        return str(entry).strip()
+
+    preferred_order = [
+        "title",
+        "role",
+        "company",
+        "institution",
+        "degree",
+        "issuer",
+        "field_of_study",
+        "technologies",
+        "description",
+        "date",
+        "duration",
+    ]
+
+    parts = []
+    used = set()
+    for key in preferred_order:
+        value = entry.get(key)
+        if value is None or value == "":
+            continue
+        used.add(key)
+        parts.append(str(value).strip())
+
+    for key, value in entry.items():
+        if key in used or value is None or value == "":
+            continue
+        if isinstance(value, list):
+            value = ", ".join(str(v).strip() for v in value if str(v).strip())
+        parts.append(str(value).strip())
+
+    return " | ".join([p for p in parts if p])
+
+
+def _normalize_to_str_list(value) -> list[str]:
+    """Normalize a mixed value (list/dict/str) into a list of strings."""
+    if value is None or value == "":
+        return []
+
+    if isinstance(value, str):
+        clean = value.strip()
+        return [clean] if clean else []
+
+    if isinstance(value, dict):
+        return [_dict_entry_to_text(value)]
+
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            if item is None:
+                continue
+            if isinstance(item, dict):
+                text = _dict_entry_to_text(item)
+            elif isinstance(item, list):
+                text = ", ".join(str(v).strip() for v in item if str(v).strip())
+            else:
+                text = str(item).strip()
+            if text:
+                out.append(text)
+        return out
+
+    return [str(value).strip()]
+
+
+def _normalize_model_output_schema(data_dict: dict) -> dict:
+    """Normalize common LLM output variants to match ResumeData schema."""
+    normalized = dict(data_dict or {})
+
+    # Common alias from some models.
+    if "roles" in normalized and not normalized.get("suggested_roles"):
+        normalized["suggested_roles"] = normalized.get("roles")
+
+    # Flatten nested skills object (languages/tools/libraries -> one list).
+    skills_value = normalized.get("skills")
+    if isinstance(skills_value, dict):
+        merged_skills = []
+        for _, section_value in skills_value.items():
+            merged_skills.extend(_normalize_to_str_list(section_value))
+        deduped = []
+        seen = set()
+        for skill in merged_skills:
+            key = skill.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(skill)
+        normalized["skills"] = deduped
+
+    list_fields = [
+        "skills",
+        "education",
+        "experience",
+        "achievements",
+        "certifications",
+        "projects",
+        "publications",
+        "languages",
+        "volunteer",
+        "awards",
+        "interests",
+        "key_strengths",
+        "suggested_roles",
+    ]
+    for field in list_fields:
+        normalized[field] = _normalize_to_str_list(normalized.get(field))
+
+    # Ensure summary fields are plain strings when provided as dict/list.
+    for field in ["summary", "ai_summary"]:
+        value = normalized.get(field)
+        if isinstance(value, dict):
+            normalized[field] = _dict_entry_to_text(value)
+        elif isinstance(value, list):
+            normalized[field] = " ".join(
+                _normalize_to_str_list(value)
+            ).strip() or None
+
+    return normalized
+
+
 def parse_resume_data_from_response(text: str, content: str) -> ResumeData:
     """Parse and validate model output into ResumeData (LLM output only)."""
     # Parse JSON from response
     data_dict = _parse_json_from_response(content)
 
+    # Normalize structured model output (dict objects/lists) to ResumeData schema.
+    data_dict = _normalize_model_output_schema(data_dict)
+    data_dict = _clean_all_fields(data_dict)
+
     # NOTE: Helper fixes are temporarily disabled as requested.
     # data_dict = _fix_project_experience_swap(data_dict)
-    # data_dict = _clean_all_fields(data_dict)
     # heuristic = _heuristic_extract_from_text(text)
     # data_dict = _merge_with_heuristics(data_dict, heuristic)
 
@@ -688,7 +816,7 @@ def _parse_json_from_response(response_text: str) -> dict:
     raise ValueError("Could not find valid JSON in response")
 
 
-def check_ollama_connection(model: str = "qwen3:4b") -> bool:
+def check_ollama_connection(model: str = "qwen3.5:2b") -> bool:
     """Check if Ollama is running and the model is available."""
     try:
         response = requests.get('http://localhost:11434/api/tags', timeout=5)

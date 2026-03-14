@@ -8,7 +8,7 @@ AI-powered job assistance platform for resume analysis, job search, and AI mock 
 
 ### 1. Resume Parsing
 - 📄 **Upload PDF/DOCX resumes**
-- 🤖 **AI-Powered Extraction** - Uses Ollama with **qwen3:4b** for intelligent parsing
+- 🤖 **AI-Powered Extraction** - Uses Ollama with **qwen3.5:2b** for intelligent parsing
 - 📊 **Structured Data**: Extracts detailed Contact Info, Education, Experience, Projects, and Skills.
 - 🛠️ **Debug Info**: View raw model output, thought process, and parsed JSON.
 
@@ -22,7 +22,7 @@ AI-powered job assistance platform for resume analysis, job search, and AI mock 
 - 🧠 **RAG Engine**: Uses local vector store (Qdrant) and Embeddings (Sentence-Transformers).
 
 ### 4. Job Search & Matching
-- 🔎 **Remote Job Search**: Fetches jobs from RemoteOK.
+- 🔎 **Remote Job Search**: Fetches jobs from Remote OK, We Work Remotely, Jobicy, and Remotive.
 - ⚡ **Semantic Matching**: Matches your resume profile against job descriptions.
 
 ### 5. AI Mock Interviewer
@@ -34,7 +34,7 @@ AI-powered job assistance platform for resume analysis, job search, and AI mock 
 
 ### Prerequisites
 - Python 3.12+
-- [Ollama](https://ollama.ai/) with model `qwen3:4b`
+- [Ollama](https://ollama.ai/) with model `qwen3.5:2b`
 - **NVIDIA GPU** (Recommended for Whisper STT)
 
 ### Installation
@@ -60,7 +60,7 @@ AI-powered job assistance platform for resume analysis, job search, and AI mock 
 4. **Ensure Ollama is running**:
    ```bash
    ollama serve
-   ollama pull qwen3:4b
+   ollama pull qwen3.5:2b
    ```
 
 5. **(Optional) Setup Gemini**:
