@@ -45,3 +45,5 @@ data/
 Project report.docx
 figures/
 scripts/
+
+**/node_modules
